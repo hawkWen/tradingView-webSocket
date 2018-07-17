@@ -55,11 +55,6 @@ export default {
       console.log(' >> webSocket 连接异常：', event)
     }
 
-    this.socket.onmessage = event => {
-      // console.log(' >> webSocket 返回数据：', JSON.parse(event.data))
-      this.onUpdateData(JSON.parse(event.data))
-    }
-
   },
   methods: {
     // 初始化
@@ -91,7 +86,6 @@ export default {
       const currentTicker = symbolInfo.ticker.toUpperCase() + '_' + resolution
       // 取消订阅
       if (currentTicker !== this.currentTicker && this.currentTicker) {
-        delete this.cacheData[this.currentTicker]
         this.datafeed.unsubscribeBars(currentTicker)
         const period = this.currentTicker.split('_')
         this.sendData({ cmd: 'unsub', args: [`candle.M${period[1]}.${period[0].toLowerCase()}`] })
@@ -104,14 +98,15 @@ export default {
           cmd: 'sub',
           args: [`candle.M${resolution}.${symbolInfo.ticker.toLowerCase()}`]
         }
-        this.sendData(params)
+        this.sendData(params, this.onUpdateData)
       } else {
         // 获取历史数据
         const params = {
           cmd: 'req',
           args: [`candle.M${resolution}.${symbolInfo.ticker.toLowerCase()}`, 1441, rangeEndDate]
         }
-        this.sendData(params, () => {
+        this.sendData(params, data => {
+          this.onUpdateData(data)
           this.getBars(symbolInfo, resolution, rangeStartDate, rangeEndDate, callback)
         })
       }
@@ -126,7 +121,9 @@ export default {
           this.socket.send(JSON.stringify(params))
         }
       }
-      callback && callback()
+      this.socket.onmessage = event => {
+        callback && callback(JSON.parse(event.data))
+      }
     },
     // 更新数据
     onUpdateData(data) {
