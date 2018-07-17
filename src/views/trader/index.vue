@@ -11,7 +11,7 @@ export default {
     traderView
   },
   mounted() {
-    this.$refs.tv.init()
+    this.$refs.tv.traderViewInit()
   }
 }
 </script>

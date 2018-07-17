@@ -1,9 +1,96 @@
-class datafeeds {
-
-  constructor(vue) {
-    this.self = vue  // vue实例
+/**
+ * 数据脉冲更新器
+ * 通过脉冲更新器触发datafeeds的getBars实时更新图表数据
+ */
+class DataPulseUpdater {
+  /**
+   * @param {*Object} datafeeds JS API
+   * @param {*} updateFrequency 更新频率
+   */
+  constructor(datafeeds, updateFrequency) {
     this.subscribers = {}
     this.requestsPending = 0
+    this.datafeeds = datafeeds
+    // 更新数据
+    const updateData = () => {
+
+      if (this.requestsPending > 0) return
+
+      for (let subscriberUID in this.subscribers) {
+        const subscriptionRecord = this.subscribers[subscriberUID]
+        const rangeEndTime = parseInt((Date.now() / 1000).toString())
+        const rangeStartTime = rangeEndTime - periodLengthSeconds(subscriptionRecord.resolution, 10)
+        this.requestsPending++
+        // 执行datafeeds的getBars实时更新图表数据
+        this.datafeeds.getBars(subscriptionRecord.symbolInfo, subscriptionRecord.resolution, rangeStartTime, rangeEndTime,
+          // 成功回调 -> onDataCallback
+          data => {
+            this.requestsPending--
+            if (this.subscribers.hasOwnProperty(subscriberUID)) return
+            if (!data || !data.length) return
+            // const lastBar = data[data.length - 1]
+            // const subscribers = subscriptionRecord.listeners
+            // subscriptionRecord.lastBarTime = lastBar.time
+            // for (let i = 0; i < subscribers.length; i++) {
+            //   subscribers[i](lastBar)
+            // }
+          },
+          // 失败回调 -> onErrorCallback
+          () => {
+            this.requestsPending--
+          }
+        )
+      }
+    }
+
+    if (typeof updateFrequency !== undefined && updateFrequency > 0) {
+      setInterval(updateData, updateFrequency)
+    }
+  }
+
+  /**
+   * 订阅K线数据。图表库将调用onRealtimeCallback方法以更新实时数据
+   * @param {*Object} symbolInfo 商品信息
+   * @param {*String} resolution 分辨率
+   * @param {*Function} onRealtimeCallback 回调函数 
+   * @param {*String} subscriberUID 监听的唯一标识符
+   * @param {*Function} onResetCacheNeededCallback (从1.7开始): onResetCacheNeededCallback将在bars数据发生变化时执行
+   */
+  subscribeBars(symbolInfo, resolution, onRealtimeCallback, subscriberUID, onResetCacheNeededCallback) {
+    if (!this.subscribers.hasOwnProperty(subscriberUID)) {
+      this.subscribers[subscriberUID] = {
+        listeners: [],
+        lastBarTime: null,
+        symbolInfo: symbolInfo,
+        resolution: resolution
+      }
+    }
+    this.subscribers[subscriberUID].listeners.push(onRealtimeCallback)
+  }
+
+  /**
+   * 取消订阅K线数据
+   * @param {*String} subscriberUID 监听的唯一标识符
+   */
+  unsubscribeBars(subscriberUID) {
+    delete this.subscribers[subscriberUID]
+  }
+
+}
+
+/**
+ * JS API
+ */
+class datafeeds {
+
+  /**
+   * JS API
+   * @param {*Object} vue vue实例
+   * @param {*Number} updateFrequency 更新频率
+   */
+  constructor(vue, updateFrequency) {
+    this.self = vue
+    this.barsPulseUpdater = new DataPulseUpdater(this, updateFrequency || 30 * 1000)
   }
 
   /**
@@ -51,12 +138,17 @@ class datafeeds {
    * @param {*Function} onErrorCallback  回调函数
    */
   getBars(symbolInfo, resolution, rangeStartDate, rangeEndDate, onDataCallback, onErrorCallback) {
-    return new Promise((resolve, reject) => {
-      this.self.getBars(symbolInfo, resolution, rangeStartDate, rangeEndDate).then(result => {
-        onDataCallback(result.bars, result.meta)
-        resolve(result)
-      })
-    })
+    // 回调数据
+    const onLoadedCallback = data => {
+      if (data && data.length) {
+        const leftTime = data[0].id
+        // 避免发生不断自动刷新
+        rangeStartDate < leftTime ? onDataCallback([], { noData: true }) : onDataCallback(data, { noData: true })
+      } else {
+        onDataCallback([], { noData: true })
+      }
+    }
+    this.self.getBars(symbolInfo, resolution, rangeStartDate, rangeEndDate, onLoadedCallback)
   }
 
   /**
@@ -68,13 +160,7 @@ class datafeeds {
    * @param {*Function} onResetCacheNeededCallback (从1.7开始): onResetCacheNeededCallback将在bars数据发生变化时执行
    */
   subscribeBars(symbolInfo, resolution, onRealtimeCallback, subscriberUID, onResetCacheNeededCallback) {
-    console.log(subscriberUID)
-    this.subscribers[subscriberUID] = {
-      lastBarTime: null,
-      listener: onRealtimeCallback,
-      resolution: resolution,
-      symbolInfo: symbolInfo,
-    }
+    this.barsPulseUpdater.subscribeBars(symbolInfo, resolution, onRealtimeCallback, subscriberUID, onResetCacheNeededCallback)
   }
 
   /**
@@ -82,41 +168,8 @@ class datafeeds {
    * @param {*String} subscriberUID 监听的唯一标识符
    */
   unsubscribeBars(subscriberUID) {
-    delete this.subscribers[subscriberUID]
+    this.barsPulseUpdater.unsubscribeBars(subscriberUID)
   }
-
-  /**
-   * 
-   */
-  onUpdateData() {
-    if (this.requestsPending > 0) return
-    this.requestsPending = 0
-    const loop = uid => {
-      this.requestsPending += 1
-      this.updateDataForSubscriber(uid).then(() => this.requestsPending -= 1).catch(() => this.requestsPending -= 1)
-    }
-    for (let uid in this.subscribers) {
-      loop(uid)
-    }
-  }
-
-  /**
-   * 
-   * @param {*String} subscriberUID 监听的唯一标识符
-   */
-  updateDataForSubscriber(subscriberUID) {
-    const subscriptionRecord = this.subscribers[subscriberUID]
-    const rangeEndTime = parseInt((Date.now() / 1000).toString())
-    const rangeStartTime = rangeEndTime - periodLengthSeconds(subscriptionRecord.resolution, 10)
-    return this.getBars(subscriptionRecord.symbolInfo, subscriptionRecord.resolution, rangeStartTime, rangeEndTime).then(result => {
-      this.onSubscriberDataReceived(subscriberUID, result)
-    })
-  }
-
-  onSubscriberDataReceived() {
-    
-  }
-
 
   /**
    * 默认配置
